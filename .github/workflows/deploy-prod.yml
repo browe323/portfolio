@@ -1,0 +1,50 @@
+name: Deploy to Production
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Authenticate runner to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+          tags: tag:github-actions
+
+      - name: Configure pinned SSH credentials
+        shell: bash
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' '${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}' > ~/.ssh/portfolio-deploy
+          chmod 600 ~/.ssh/portfolio-deploy
+          printf '%s\n' '${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}' > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy production Compose file
+        shell: bash
+        run: |
+          scp -i ~/.ssh/portfolio-deploy docker-compose.prod.yml \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/apps/portfolio/docker-compose.prod.yml"
+
+      - name: Deploy tested immutable image
+        shell: bash
+        env:
+          GH_REF: ${{ github.ref_name }}
+        run: |
+          COMMIT_SHA=$(git rev-list -n 1 "$GH_REF")
+          ssh -i ~/.ssh/portfolio-deploy \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "cd /opt/apps/portfolio && IMAGE_REF=ghcr.io/${{ github.repository_owner }}/portfolio:${COMMIT_SHA} docker compose --env-file .env.prod -f docker-compose.prod.yml pull && IMAGE_REF=ghcr.io/${{ github.repository_owner }}/portfolio:${COMMIT_SHA} docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --remove-orphans"
